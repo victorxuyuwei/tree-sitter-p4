@@ -71,59 +71,198 @@ widthIntLiteral = seq(
 
 module.exports = grammar({
   name: 'p4',
+
+  extras: $ => [
+    /\s|\\\r?\n/,
+    $.comment,
+  ],
+
+  word: $ => $.identifier,
+
+  conflicts: $ => [
+    [$.unaryExpression, $.typeArgFunctionCall, $.binaryExpression],
+    [$.typeArgFunctionCall, $.binaryExpression],
+    [$.castExpression, $.typeArgFunctionCall, $.binaryExpression],
+    [$.typeArgFunctionCall, $.binaryExpression, $.binaryNonBraceExpression],
+  ],
+
   rules: {
-    extras: $ => [
-      /\s|\\\r?\n/,
-      $.comment,
-    ],
+    source_file: $ => repeat($._declaration),
 
-    source_file: $ => repeat($.declaration),
-
-    declaration: $ => choice(
+    _declaration: $ => choice(
       $.constantDeclaration,
       $.externDeclaration,
       $.actionDeclaration,
       $.parserDeclaration,
-      $.typeDeclaration,
+      $._typeDeclaration,
       $.controlDeclaration,
       $.instantiation,
       $.errorDeclaration,
       $.matchKindDeclaration,
-      $.functionDeclaration
+      $.functionDeclaration,
+
+      // preproc
+      $.preproc_if,
+      $.preproc_ifdef,
+      $.preproc_include,
+      $.preproc_def,
+      $.preproc_function_def,
+      $.preproc_call
     ),
 
-    _nonTypeName: $ => choice(
+    /**************** Preprocess ******************/
+    // Preprocesser
+
+    preproc_include: $ => seq(
+      preprocessor('include'),
+      field('path', choice(
+        $.stringLiteral,
+        $.systemLibString,
+        $.identifier,
+        // alias($.preproc_call_expression, $.call_expression),
+      )),
+      '\n'
+    ),
+
+    preproc_def: $ => seq(
+      preprocessor('define'),
+      field('name', $.identifier),
+      field('value', optional($.preproc_arg)),
+      '\n'
+    ),
+
+    preproc_function_def: $ => seq(
+      preprocessor('define'),
+      field('name', $.identifier),
+      field('parameters', $.preproc_params),
+      field('value', optional($.preproc_arg)),
+      '\n'
+    ),
+
+    preproc_params: $ => seq(
+      token.immediate('('), commaSep(choice($.identifier, '...')), ')'
+    ),
+
+    preproc_call: $ => seq(
+      field('directive', $.preproc_directive),
+      field('argument', optional($.preproc_arg)),
+      '\n'
+    ),
+
+    ...preprocIf('', $ => $._declaration),
+    // ...preprocIf('_in_field_declaration_list', $ => $._field_declaration_list_item),
+
+    preproc_directive: $ => /#[ \t]*[a-zA-Z]\w*/,
+    preproc_arg: $ => token(prec(-1, repeat1(/.|\\\r?\n/))),
+
+    _preproc_expression: $ => choice(
       $.identifier,
-      $.typeIdentifier,
-      $.apply,
-      $.state,
-      $.type
+      alias($.preproc_call_expression, $.call_expression),
+      $.integer,
+      // $.char_literal,
+      $.preproc_defined,
+      alias($.preproc_unary_expression, $.unary_expression),
+      alias($.preproc_binary_expression, $.binary_expression),
+      // alias($.preproc_parenthesized_expression, $.parenthesized_expression)
     ),
 
-    name: $ => choice($._nonTypeName, $.typeIdentifier),
+    preproc_parenthesized_expression: $ => seq(
+      '(',
+      $._preproc_expression,
+      ')'
+    ),
+
+    preproc_defined: $ => choice(
+      prec(PREC.BRACKET, seq('defined', '(', $.identifier, ')')),
+      seq('defined', $.identifier),
+    ),
+
+    preproc_unary_expression: $ => prec.left(PREC.UNARY, seq(
+      field('operator', choice('!', '~', '-', '+')),
+      field('argument', $._preproc_expression)
+    )),
+
+    preproc_call_expression: $ => prec(PREC.BRACKET, seq(
+      field('function', $.identifier),
+      field('arguments', alias($.preproc_argument_list, $.argument_list))
+    )),
+
+    preproc_argument_list: $ => seq(
+      '(',
+      commaSep($._preproc_expression),
+      ')'
+    ),
+
+    preproc_binary_expression: $ => {
+      const table = [
+        // ['+', PREC.ADD],
+        // ['-', PREC.ADD],
+        // ['*', PREC.MULTIPLY],
+        // ['/', PREC.MULTIPLY],
+        // ['%', PREC.MULTIPLY],
+        ['||', PREC.LOR],
+        ['&&', PREC.LAND],
+        // ['|', PREC.INCLUSIVE_OR],
+        // ['^', PREC.EXCLUSIVE_OR],
+        // ['&', PREC.BITWISE_AND],
+        ['==', PREC.EQ],
+        ['!=', PREC.EQ],
+        ['>', PREC.CMP],
+        ['>=', PREC.CMP],
+        ['<=', PREC.CMP],
+        ['<', PREC.CMP],
+        ['<<', PREC.SHIFT],
+        ['>>', PREC.SHIFT],
+      ];
+
+      return choice(...table.map(([operator, precedence]) => {
+        return prec.left(precedence, seq(
+          field('left', $._preproc_expression),
+          field('operator', operator),
+          field('right', $._preproc_expression)
+        ))
+      }));
+    },
+
+    /**************** Main grammar ****************/
+
+    _nonTypeName: $ => prec(1, choice(
+      $.identifier,
+      $.apply,
+      $.key,
+      $.actions,
+      $.state,
+      $.entries,
+      $.type
+    )),
+
+    name: $ => choice($._nonTypeName, $._typeIdentifier),
 
     _nonTableKwName: $ => choice(
       $.identifier,
-      $.typeIdentifier,
+      $._typeIdentifier,
       $.apply,
       $.state,
       $.type
     ),
 
-    _optAnnotations: $ => optional($._annotations),
+    // Use repeat($.annotation)
+    // _optAnnotations: $ => optional($._annotations),
 
-    _annotations: $ => repeat1($.annotation),
+    // _annotations: $ => repeat1($.annotation),
+
+
 
     annotation: $ => seq(
       '@',
       $.name,
       optional(choice(
-        seq('(', $.annotationBody, ')'),
+        seq('(', optional($.annotationBody), ')'),
         seq('[', $.structuredAnnotationBody, ']')
       ))
     ),
 
-    parameterList: $ => commaSep($.parameter),
+    parameterList: $ => seq('(', commaSep($.parameter), ')'),
 
     // _nonEmptyParameterList: $ => choice(
     //   $.parameter,
@@ -131,42 +270,39 @@ module.exports = grammar({
     // ),
 
     parameter: $ => seq(
-      $._optAnnotations,
-      $.direction,
+      repeat($.annotation),
+      optional($.direction),
       $.typeRef,
       $.name,
-      optional(seq('=', $.expression))
+      optional(seq('=', $._expression))
     ),
 
-    direction: $ => optional(choice(
+    direction: $ => choice(
       $.in,
       $.out,
       $.inout
-    )),
+    ),
 
-    packageTypeDeclaration: $ => choice(
-      seq(
-        $._optAnnotations,
+    packageTypeDeclaration: $ => seq(
+        repeat($.annotation),
         $.package,
         $.name,
-        $._optTypeParameters,
-      ),
-      seq('(', $.parameterList, ')')
+        optional($._typeParameters),
+        $.parameterList
     ),
 
     instantiation: $ => choice(
-      seq($.typeRef, '(', $.argumentList, ')', $.name, ';'),
-      seq($._annotations, $.typeRef, '(', $.argumentList, ')', $.name, ';'),
-      seq($._annotations, $.typeRef, '(', $.argumentList, ')',
+      seq($.typeRef, $.argumentList, $.name, ';'),
+      seq(repeat1($.annotation), $.typeRef, $.argumentList, $.name, ';'),
+      seq(repeat1($.annotation), $.typeRef, $.argumentList,
             $.name, '=', $.objInitializer, ';'),
-      seq($.typeRef, '(', $.argumentList, ')', $.name, '=',
+      seq($.typeRef, $.argumentList, $.name, '=',
             $.objInitializer, ';')
     ),
 
     objInitializer: $ => seq('{', repeat($.objDeclaration), '}'),
     objDeclaration: $ => choice($.functionDeclaration, $.instantiation),
 
-    optConstructorParameters: $ => choice(seq('(', $.parameterList, ')')),
 
     dotPrefix: $ => '.',
 
@@ -174,7 +310,7 @@ module.exports = grammar({
 
     parserDeclaration: $ => seq(
       $.parserTypeDeclaration,
-      $.optConstructorParameters,
+      optional($.parameterList),
       '{',
         repeat($.parserLocalElement),
         repeat1($.parserState),
@@ -189,16 +325,16 @@ module.exports = grammar({
     ),
 
     parserTypeDeclaration: $ => seq(
-      $._optAnnotations, $.parser, $.name, $._optTypeParameters,
-      '(', $.parameterList, ')'
+      repeat($.annotation), $.parser, $.name, optional($._typeParameters),
+      $.parameterList
     ),
 
     parserState: $ => seq(
-      $._optAnnotations, $.state, $.name,
-      '{', $._parserStatements, $.transitionStatement, '}'
+      repeat($.annotation), $.state, $.name,
+      '{', repeat($.parserStatement), optional($._transitionStatement), '}'
     ),
 
-    _parserStatements: $ => repeat($.parserStatement),
+    // _parserStatements: $ => repeat($.parserStatement),
 
     parserStatement: $ => choice(
       $.assignmentOrMethodCallStatement,
@@ -211,18 +347,16 @@ module.exports = grammar({
     ),
 
     parserBlockStatement: $ => seq(
-      $._optAnnotations, '{', $._parserStatements, '}'
+      repeat($.annotation), '{', repeat($.parserStatement), '}'
     ),
 
-    transitionStatement: $ => optional(seq($.transition, $.stateExpression)),
+    _transitionStatement: $ => seq($.transition, $.stateExpression),
 
     stateExpression: $ => choice(seq($.name, ';'), $.selectExpression),
 
-    selectExpression: $ => seq($.select, '(', $.expressionList, ')',
-      '{', selectCaseList, '}'
+    selectExpression: $ => seq($.select, '(', commaSep($._expression), ')',
+      '{', repeat($.selectCase), '}'
     ),
-
-    selectCaseList: $ => repeat($.selectCase),
 
     selectCase: $ => seq($.keysetExpression, ':', $.name, ';'),
 
@@ -236,45 +370,43 @@ module.exports = grammar({
       seq('(', $.reducedSimpleKeysetExpression, ')')
     ),
 
-    simpleExpressionList: $ => commaSep1(simpleKeysetExpression),
+    simpleExpressionList: $ => commaSep1($.simpleKeysetExpression),
 
     reducedSimpleKeysetExpression: $ => choice(
-      req($.expression, '&&&', $.expression),
-      req($.expression, '..', $.expression),
+      seq($._expression, $.mask, $._expression),
+      seq($._expression, $.range, $._expression),
       $.default,
-      '_'
+      $.dontcare
     ),
 
     simpleKeysetExpression: $ => choice(
-      $.expression,
+      $._expression,
       $.default,
       $.dontcare,
-      req($.expression, $.mask, $.expression),
-      req($.expression, $.range, $.expression),
+      seq($._expression, $.mask, $._expression),
+      seq($._expression, $.range, $._expression),
     ),
 
     valueSetDeclaration: $ => choice(
-      seq($._optAnnotations, $.valueset, '<', $.baseType, '>',
-        '(', $.expression, ')', $.name, ';'),
-      seq($._optAnnotations, $.valueset, '<', $.tupleType, '>',
-        '(', $.expression, ')', $.name, ';'),
-      seq($._optAnnotations, $.valueset, '<', $.typeName, '>',
-        '(', $.expression, ')', $.name, ';')
+      seq(repeat($.annotation), $.valueset, '<', $.baseType, '>',
+        '(', $._expression, ')', $.name, ';'),
+      seq(repeat($.annotation), $.valueset, '<', $.tupleType, '>',
+        '(', $._expression, ')', $.name, ';'),
+      seq(repeat($.annotation), $.valueset, '<', $.typeName, '>',
+        '(', $._expression, ')', $.name, ';')
     ),
 
     /****************** Control ******************/
 
     controlDeclaration: $ => seq(
-      $.controlTypeDeclaration, $.optConstructorParameters,
-      '{', $.controlLocalDeclarations, $.apply, $.controlBody, '}'
+      $.controlTypeDeclaration, optional($.parameterList),
+      '{', repeat($.controlLocalDeclaration), $.apply, $.controlBody, '}'
     ),
 
     controlTypeDeclaration: $ => seq(
-      $._optAnnotations, $.control, $.name, $._optTypeParameters,
-      '(', $.parameterList, ')'
+      repeat($.annotation), $.control, $.name, optional($._typeParameters),
+      $.parameterList
     ),
-
-    controlLocalDeclarations: $ => repeat($.controlLocalDeclaration),
 
     controlLocalDeclaration: $ => choice(
       $.constantDeclaration,
@@ -289,19 +421,17 @@ module.exports = grammar({
     /******************** Extern ********************/
 
     externDeclaration: $ => choice(
-      seq($._optAnnotations, $.extern, $._nonTypeName, $._optTypeParameters,
-          '{', $._methodPrototypes, '}'),
-      seq($._optAnnotations, $.extern, $.functionPrototype, ';')
+      seq(repeat($.annotation), $.extern, $._nonTypeName, optional($._typeParameters),
+          '{', repeat($.methodPrototype), '}'),
+      seq(repeat($.annotation), $.extern, $.functionPrototype, ';')
     ),
 
-    _methodPrototypes: $ => repeat($.methodPrototype),
-
     functionPrototype: $ => seq(
-      $.typeOrVoid, $.name, $._optTypeParameters, '(', $.parameterList, ')'),
+      $.typeOrVoid, $.name, optional($._typeParameters), $.parameterList),
 
     methodPrototype: $ => choice(
-      seq($._optAnnotations, $.functionPrototype, ';'),
-      seq($._optAnnotations, $.typeIdentifier, '(', $.parameterList, ')', ';'),
+      seq(repeat($.annotation), $.functionPrototype, ';'),
+      seq(repeat($.annotation), $._typeIdentifier, $.parameterList, ';'),
     ),
 
     /************************** TYPES ****************************/
@@ -320,20 +450,20 @@ module.exports = grammar({
     ),
 
     prefixedType: $ => choice(
-      $.typeIdentifier,
-      seq($.dotPrefix, $.typeIdentifier)
+      $._typeIdentifier,
+      seq($.dotPrefix, $._typeIdentifier)
     ),
 
     typeName: $ => $.prefixedType,
 
-    tupleType: $ => seq($.tuple, '<', $.typeArgumentList, '>'),
+    tupleType: $ => seq($.tuple, $.typeArgumentList),
 
     headerStackType: $ => choice(
-      seq($.typeName, '[', $.expression, ']'),
-      seq($.specializedType, '[', $.expression, ']')
+      seq($.typeName, '[', $._expression, ']'),
+      seq($.specializedType, '[', $._expression, ']')
     ),
 
-    specializedType: $ => seq($.prefixedType, '<', $.typeArgumentList, '>'),
+    specializedType: $ => seq($.prefixedType, $.typeArgumentList),
 
     baseType: $ => choice(
       $.bool,
@@ -344,37 +474,33 @@ module.exports = grammar({
       seq($.bit, '<', $.integer, '>'),
       seq($.int, '<', $.integer, '>'),
       seq($.varbit, '<', $.integer, '>'),
-      seq($.bit, '<', '(', $.expression, ')', '>'),
-      seq($.int, '<', '(', $.expression, ')', '>'),
-      seq($.varbit, '<', '(', $.expression, ')', '>')
+      seq($.bit, '<', '(', $._expression, ')', '>'),
+      seq($.int, '<', '(', $._expression, ')', '>'),
+      seq($.varbit, '<', '(', $._expression, ')', '>')
     ),
 
-    typeOrVoid: $ => choice($.typeRef, $.void, $.identifier),
+    typeOrVoid: $ => prec(1,choice($.typeRef, $.void, $.identifier)),
 
-    _optTypeParameters: $ => optional($._typeParameters),
-
-    _typeParameters: $ => seq('<', $._typeParameterList, '>'),
-
-    _typeParameterList: $ => repeat($.name),
+    _typeParameters: $ => seq('<', repeat($.name), '>'),
 
     realTypeArg: $ => choice($.dontcare, $.typeRef, $.void),
 
     typeArg: $ => choice($.dontcare, $.typeRef, $._nonTypeName, $.void),
 
-    realTypeArgumentList: $ => choice($.realTypeArg,
-      seq($.realTypeArgumentList, $.comma, $.typeArg)),
+    realTypeArgumentList: $ => seq($.realTypeArg,
+      repeat(seq($.comma, $.typeArg))),
 
-    typeArgumentList: $ => commaSep($.typeArg),
+    typeArgumentList: $ => seq('<', commaSep($.typeArg), '>'),
 
-    typeDeclaration: $ => choice(
-      $.derivedTypeDeclaration,
+    _typeDeclaration: $ => choice(
+      $._derivedTypeDeclaration,
       $.typedefDeclaration,
       seq($.parserTypeDeclaration, ';'),
       seq($.controlTypeDeclaration, ';'),
       seq($.packageTypeDeclaration, ';')
     ),
 
-    derivedTypeDeclaration: $ => choice(
+    _derivedTypeDeclaration: $ => choice(
       $.headerTypeDeclaration,
       $.headerUnionDeclaration,
       $.structTypeDeclaration,
@@ -382,27 +508,27 @@ module.exports = grammar({
     ),
 
     headerTypeDeclaration: $ => seq(
-      $._optAnnotations, $.header, $.name, $._optTypeParameters,
-      '{', $._structFieldList, '}'
+      repeat($.annotation), $.header, $.name, optional($._typeParameters),
+      $._structFieldBlock
     ),
 
     headerUnionDeclaration: $ => seq(
-      $._optAnnotations, $.headerUnion, $.name, $._optTypeParameters,
-      '{', $._structFieldList, '}'
+      repeat($.annotation), $.headerUnion, $.name, optional($._typeParameters),
+      $._structFieldBlock
     ),
 
     structTypeDeclaration: $ => seq(
-      $._optAnnotations, $.struct, $.name, $._optTypeParameters,
-      '{', $._structFieldList, '}'
+      repeat($.annotation), $.struct, $.name, optional($._typeParameters),
+      $._structFieldBlock
     ),
 
-    _structFieldList: $ => repeat($.structField),
+    _structFieldBlock: $ => seq('{', repeat($.structField), '}'),
 
-    structField: $ => seq($._optAnnotations, $.typeRef, $.name, ';'),
+    structField: $ => seq(repeat($.annotation), $.typeRef, $.name, ';'),
 
     enumDeclaration: $ => choice(
-      seq($._optAnnotations, $.enum, $.name, '{', $._identifierList, '}'),
-      seq($._optAnnotations, $.enum, $.typeRef, $.name,
+      seq(repeat($.annotation), $.enum, $.name, '{', $._identifierList, '}'),
+      seq(repeat($.annotation), $.enum, $.typeRef, $.name,
         '{', $._specifiedIdentifierList, '}'),
     ),
 
@@ -417,37 +543,39 @@ module.exports = grammar({
     specifiedIdentifier: $ => seq($.name, '=', $.initializer),
 
     typedefDeclaration: $ => choice(
-      seq($._optAnnotations, $.typedef, $.typeRef, $.name, ';'),
-      seq($._optAnnotations, $.typedef, $.derivedTypeDeclaration, $.name, ';'),
-      seq($._optAnnotations, $.type, $.typeRef, $.name, ';'),
-      seq($._optAnnotations, $.type, $.derivedTypeDeclaration, $.name, ';')
+      seq(repeat($.annotation), $.typedef, $.typeRef, $.name, ';'),
+      seq(repeat($.annotation), $.typedef, $._derivedTypeDeclaration, $.name, ';'),
+      seq(repeat($.annotation), $.type, $.typeRef, $.name, ';'),
+      seq(repeat($.annotation), $.type, $._derivedTypeDeclaration, $.name, ';')
     ),
 
     /*************************** STATEMENTS *************************/
 
     assignmentOrMethodCallStatement: $ => choice(
-      seq($.lvalue, '(', $._argumentList, ')', ';'),
-      seq($.lvalue, '<', $._typeArgumentList, '>',
-        '(', $._argumentList, ')', ';'),
-      seq($.lvalue, '=', $.expression, ';')
+      seq($.lvalue, $.argumentList, ';'),
+      seq($.lvalue, $.typeArgumentList,
+        $.argumentList, ';'),
+      seq($.lvalue, '=', $._expression, ';')
     ),
 
     emptyStatement: $ => ';',
 
     returnStatement: $ => choice(
       seq($.return, ';'),
-      seq($.return, $.expression, ';'),
+      seq($.return, $._expression, ';'),
     ),
 
     exitStatement: $ => seq($.exit, ';'),
 
-    conditionalStatement: $ => choice(
-      seq($.if, '(', $.expression, ')', $.statement),
-      seq($.if, '(', $.expression, ')', $.statement, $.else, $.statement)
-    ),
+    conditionalStatement: $ => prec.right(seq(
+      $.if, '(', $._expression, ')', 
+        $.statement, 
+      optional(seq($.else, 
+        $.statement)))),
+  
 
     directApplication: $ => seq(
-      $.typeName, '.', $.apply, '(', argumentList, ')', ';'
+      $.typeName, '.', $.apply, $.argumentList, ';'
     ),
 
     statement: $ => choice(
@@ -461,14 +589,14 @@ module.exports = grammar({
       $.switchStatement
     ),
 
-    blockStatement: $ => seq($._optAnnotations, '{', $._statOrDeclList, '}'),
+    blockStatement: $ => seq(repeat($.annotation), $._statOrDeclList),
 
-    _statOrDeclList: $ => repeat($.statementOrDeclaration),
+    _statOrDeclList: $ => seq('{', repeat($.statementOrDeclaration), '}'),
 
-    switchStatement: $ => seq($.switch, '(', $.expression, ')',
-      '{', $.switchCases, '}'),
+    switchStatement: $ => seq($.switch, '(', $._expression, ')',
+      $.switchBlock),
 
-    switchCases: $ => repeat($.switchCase),
+    switchBlock: $ => seq('{', repeat($.switchCase), '}'),
 
     switchCase: $ => choice(
       seq($.switchLabel, ':', $.blockStatement),
@@ -477,7 +605,7 @@ module.exports = grammar({
 
     switchLabel: $ => choice(
       $.default,
-      $.nonBraceExpression
+      $._nonBraceExpression
     ),
 
     statementOrDeclaration: $ => choice(
@@ -490,56 +618,59 @@ module.exports = grammar({
     /********************* Tables *********************/
 
     tableDeclaration: $ => seq(
-      $._optAnnotations, $.table, $.name, '{', $._tablePropertyList, '}'
+      repeat($.annotation), $.table, $.name, $._tablePropertyBlock,
     ),
 
-    _tablePropertyList: $ => repeat1($.tableProperty),
+    _tablePropertyBlock: $ => seq('{', repeat1($.tableProperty), '}'),
 
     tableProperty: $ => choice(
-      seq($.key, '=', '{', $._keyElementList, '}'),
-      seq($.actions, '=', '{', $._actionList, '}'),
-      seq($._optAnnotations, $.const, $.entries, '=', '{', $._entriesList, '}'),
-      seq($._optAnnotations, $.const, $._nonTableKwName, '=', $.initializer, ';'),
-      seq($._optAnnotations, $._nonTableKwName, '=', $.initializer, ';')
+      seq($.key, '=', $._keyElementBlock),
+      seq($.actions, '=', $._actionBlock),
+      seq(repeat($.annotation), $.const, $.entries, '=', $._entriesBlock),
+      seq(repeat($.annotation), $.const, $._nonTableKwName, '=', $.initializer, ';'),
+      seq(repeat($.annotation), $._nonTableKwName, '=', $.initializer, ';')
     ),
 
-    _keyElementList: $ => repeat($.keyElement),
+    _keyElementBlock: $ => seq('{', repeat($.keyElement), '}'),
 
-    keyElement: $ => seq($.expression, ':', $.name, $._optAnnotations, ';'),
+    keyElement: $ => seq($._expression, ':', $.name, repeat($.annotation), ';'),
 
-    _actionList: $ => repeat(seq($._optAnnotations, $.actionRef, ';')),
+    _actionBlock: $ => seq(
+      '{', 
+        repeat(seq(repeat($.annotation), $.actionRef, ';')),
+      '}'
+    ),
 
     actionRef: $ => seq(
       $.prefixedNonTypeName,
-      optional(seq('(', $.argumentList, ')'))
+      optional($.argumentList)
     ),
 
-    _entriesList: $ => repeat1($.entry),
+    _entriesBlock: $ => seq('{', repeat1($.entry), '}'),
 
     entry: $ => seq(
-      $.keysetExpression, ':', $.actionRef, $._optAnnotations, ';'
+      $.keysetExpression, ':', $.actionRef, repeat($.annotation), ';'
     ),
 
     /********************* Action *********************/
 
     actionDeclaration: $ => seq(
-      $._optAnnotations, $.action, $.name,
-      '(', $.parameterList, ')', $.blockStatement
+      repeat($.annotation), $.action, $.name,
+      $.parameterList, $.blockStatement
     ),
 
     /******************* Variables *******************/
 
     variableDeclaration: $ => seq(
-      $._optAnnotations, $.typeRef, $.name, $._optInitializer, ';'
+      repeat($.annotation), $.typeRef, $.name, 
+        optional(seq('=', $.initializer)), ';'
     ),
 
     constantDeclaration: $ => seq(
-      $._optAnnotations, $.const, $.typeRef, $.name, '=', $.initializer, ';'
+      repeat($.annotation), $.const, $.typeRef, $.name, '=', $.initializer, ';'
     ),
 
-    _optInitializer: $ => optional(seq('=', $.initializer)),
-
-    initializer: $ => $.expression,
+    initializer: $ => $._expression,
 
     /******************* Expressions *******************/
 
@@ -547,27 +678,27 @@ module.exports = grammar({
       $.functionPrototype, $.blockStatement
     ),
 
-    argumentList: $ => commaSep($.argument),
+    argumentList: $ => seq('(', commaSep($.argument), ')'),
 
     argument: $ => choice(
-      $.expression,
-      seq($.name, '=', $.expression),
+      $._expression,
+      seq($.name, '=', $._expression),
       $.dontcare
     ),
 
     kvList: $ => commaSep1($.kvPair), // at least one kvPair
 
-    kvPair: $ => seq($.name, '=', $.expression),
+    kvPair: $ => seq($.name, '=', $._expression),
 
-    expressionList: $ => commaSep($.expression),
+    // expressionList: $ => commaSep($._expression),
 
-    annotationBody: $ => optional(choice(
-      seq($.annotationBody, '(', $.annotationBody, ')'),
-      seq($.annotationBody, $.annotationToken)
-    )),
+    annotationBody: $ => choice(
+      seq(optional($.annotationBody), '(', optional($.annotationBody), ')'),
+      seq(optional($.annotationBody), $.annotationToken)
+    ),
 
     structuredAnnotationBody: $ => choice(
-      $.expressionList,
+      commaSep1($._expression),
       $.kvList
     ),
 
@@ -589,13 +720,13 @@ module.exports = grammar({
       $.extern,
       $.false,
       $.header,
-      $.header_union,
+      $.headerUnion,
       $.if,
       $.in,
       $.inout,
       $.int,
       $.key,
-      $.match_kind,
+      $.matchKind,
       $.type,
       $.out,
       $.parser,
@@ -617,7 +748,7 @@ module.exports = grammar({
       $.void,
       '_',
       $.identifier,
-      $.typeIdentifier,
+      $._typeIdentifier,
       $.stringLiteral,
       $.integer,
       '&&&',
@@ -655,7 +786,7 @@ module.exports = grammar({
       '=',
       ';',
       '@',
-      $.unknownToken
+      // $.unknownToken
     ),
 
     member: $ => $.name,
@@ -668,14 +799,14 @@ module.exports = grammar({
     lvalue: $ => choice(
       $.prefixedNonTypeName,
       $.this,
-      seq($.lvalue, '.', $.memeber),
-      seq($.lvalue, '[', $.expression, ']'),
-      seq($.lvalue, '[', $.expression, ':', $.expression, ']')
+      seq($.lvalue, '.', $.member),
+      seq($.lvalue, '[', $._expression, ']'),
+      seq($.lvalue, '[', $._expression, ':', $._expression, ']')
     ),
 
     // TODO: add precedences
 
-    expression: $ => choice(
+    _expression: $ => choice(
       $.integer,
       $.true,
       $.false,
@@ -683,36 +814,43 @@ module.exports = grammar({
       $.stringLiteral,
       $._nonTypeName,
       seq($.dotPrefix, $._nonTypeName),
-      prec(PREC.BRACKET,seq($.expression, '[', $.expression, ']')),
+      prec(PREC.BRACKET,seq($._expression, '[', $._expression, ']')),
       prec(PREC.BRACKET,
-        seq($.expression, '[', $.expression, ':', $.expression, ']')),
-      seq('{', $.expressionList, '}'),
+        seq($._expression, '[', $._expression, ':', $._expression, ']')),
+      seq('{', commaSep($._expression), '}'),
       seq('{', $.kvList, '}'),
-      seq('(', $.expression, ')'),
+      seq('(', $._expression, ')'),
       $.unaryExpression,
       $.memberExpression,
       $.binaryExpression,
 
-      prec(PREC.QUESTION, seq($.expression, '?',
-        prec(PREC.COLON, seq(':', $.expression)))),
+      prec(PREC.QUESTION, seq($._expression, '?',
+        prec(PREC.COLON, seq(':', $._expression)))),
       
-      seq($.expression, '<', $.realTypeArgumentList, '>',
-        '(', $.argumentList, ')'),
-      seq($.expression, '(', $.argumentList, ')'),
-      seq($.nameType, '(', $.argumentList, ')'),
-      seq('(', $.typeRef, ')', $.expression)
+      $.typeArgFunctionCall,
+
+      seq($._expression, $.argumentList),
+      seq($.nameType, $.argumentList),
+      $.castExpression
     ),
+
+
+    castExpression: $ => prec(PREC.UNARY, 
+      seq('(', $.typeRef, ')', $._expression)),
 
     unaryExpression: $ => prec.left(PREC.UNARY, seq(
       field('operator', choice('!', '~', '-', '+')),
-      field('argument', $.expression)
+      field('argument', $._expression)
     )),
 
     memberExpression: $ => prec.left(PREC.DOT, seq(
-      choice($.typeName, $.error, $.expression),
+      choice($.typeName, $.error, $._expression),
       '.',
       $.member
     )),
+
+    typeArgFunctionCall: $ => prec.left(PREC.BRACKET,
+      seq($._expression, '<', $.realTypeArgumentList, '>', $.argumentList)),
 
     binaryExpression: $ => {
       const table = [
@@ -740,15 +878,15 @@ module.exports = grammar({
       ];
 
       return choice(...table.map(([operator, precedence]) => prec.left(precedence,
-        seq(field('left', $.expression),
+        seq(field('left', $._expression),
             field('operator', operator),
-            field('right', $.expression))
+            field('right', $._expression))
       )));
 
     },
 
 
-    nonBraceExpression: $ => choice(
+    _nonBraceExpression: $ => choice(
       $.integer,
       $.true,
       $.false,
@@ -756,27 +894,30 @@ module.exports = grammar({
       $.stringLiteral,
       $._nonTypeName,
       seq($.dotPrefix, $._nonTypeName),
-      prec(PREC.BRACKET,seq($.nonBraceExpression, '[', $.expression, ']')),
+      prec(PREC.BRACKET,seq($._nonBraceExpression, '[', $._expression, ']')),
       prec(PREC.BRACKET,
-        seq($.nonBraceExpression, '[', $.expression, ':', $.expression, ']')),
-      seq('(', $.expression, ')'),
+        seq($._nonBraceExpression, '[', $._expression, ':', $._expression, ']')),
+      seq('(', $._expression, ')'),
       $.unaryExpression,
       $.memberNonBraceExpression,
       $.binaryNonBraceExpression,
 
-      prec(PREC.QUESTION, seq($.nonBraceExpression, '?',
-        prec(PREC.COLON, seq(':', $.expression)))),
+      prec(PREC.QUESTION, seq($._nonBraceExpression, '?',
+        prec(PREC.COLON, seq(':', $._expression)))),
       
-      seq($.nonBraceExpression, '<', $.realTypeArgumentList, '>',
-        '(', $.argumentList, ')'),
-      seq($.nonBraceExpression, '(', $.argumentList, ')'),
-      seq($.nameType, '(', $.argumentList, ')'),
-      seq('(', $.typeRef, ')', $.expression)
+      // seq($._nonBraceExpression, '<', $.realTypeArgumentList, '>',
+      //   $.argumentList),
+      $.typeArgNonBraceFunctionCall,
+      seq($._nonBraceExpression, $.argumentList),
+      seq($.nameType, $.argumentList),
+      $.castExpression,
     ),
 
+    typeArgNonBraceFunctionCall: $ => prec.left(PREC.BRACKET,
+      seq($._nonBraceExpression, '<', $.realTypeArgumentList, '>', $.argumentList)),
 
     memberNonBraceExpression: $ => prec.left(PREC.DOT, seq(
-      choice($.typeName, $.error, $.nonBraceExpression),
+      choice($.typeName, $.error, $._nonBraceExpression),
       '.',
       $.member
     )),
@@ -807,15 +948,16 @@ module.exports = grammar({
       ];
 
       return choice(...table.map(([operator, precedence]) => prec.left(precedence,
-        seq(field('left', $.nonBraceExpression),
+        seq(field('left', $._nonBraceExpression),
             field('operator', operator),
-            field('right', $.expression))
+            field('right', $._expression))
       )));
 
     },
 
     /****************** Token ******************/
 
+    pragma: $ => token('@pragma'),
     abstract: $ => token('abstract'),
     action: $ => token('action'),
     actions: $ => token('actions'),
@@ -832,14 +974,14 @@ module.exports = grammar({
     exit: $ => token('exit'),
     extern: $ => token('extern'),
     false: $ => token('false'),
-    header_union: $ => token('header_union'),
+    headerUnion: $ => token('header_union'),
     header: $ => token('header'),
     if: $ => token('if'),
     in: $ => token('in'),
     inout: $ => token('inout'),
     int: $ => token('int'),
     key: $ => token('key'),
-    match_kind: $ => token('match_kind'),
+    matchKind: $ => token('match_kind'),
     type: $ => token('type'),
     out: $ => token('out'),
     package: $ => token('package'),
@@ -876,9 +1018,74 @@ module.exports = grammar({
     // Ref tree-sitter-c
     identifier: $ => /[a-zA-Z_]\w*/,
 
+    // currently I can't distinguish between them with tree-sitter. set -1
+    _typeIdentifier: $ => prec(-1, alias($.identifier, $.typeIdentifier)),
+
+    stringLiteral: $ => seq(
+      '"',
+      optional(
+        token.immediate(prec(1, /[^"\n]+/)),
+      ),
+      '"',
+    ),
+
+    systemLibString: $ => token(seq(
+      '<',
+      repeat(choice(/[^>\n]/, '\\>')),
+      '>'
+    )),
+
+    mask: $ => '&&&',
+    range: $ => '..',
+    comma: $ => ','
+
   }
 })
 
+function preprocIf (suffix, content) {
+  function elseBlock ($) {
+    return choice(
+      suffix ? alias($['preproc_else' + suffix], $.preproc_else) : $.preproc_else,
+      suffix ? alias($['preproc_elif' + suffix], $.preproc_elif) : $.preproc_elif,
+    );
+  }
+
+  return {
+    ['preproc_if' + suffix]: $ => seq(
+      preprocessor('if'),
+      field('condition', $._preproc_expression),
+      '\n',
+      repeat(content($)),
+      field('alternative', optional(elseBlock($))),
+      preprocessor('endif')
+    ),
+
+    ['preproc_ifdef' + suffix]: $ => seq(
+      choice(preprocessor('ifdef'), preprocessor('ifndef')),
+      field('name', $.identifier),
+      repeat(content($)),
+      field('alternative', optional(elseBlock($))),
+      preprocessor('endif')
+    ),
+
+    ['preproc_else' + suffix]: $ => seq(
+      preprocessor('else'),
+      repeat(content($))
+    ),
+
+    ['preproc_elif' + suffix]: $ => seq(
+      preprocessor('elif'),
+      field('condition', $._preproc_expression),
+      '\n',
+      repeat(content($)),
+      field('alternative', optional(elseBlock($))),
+    )
+  }
+}
+
+function preprocessor (command) {
+  return alias(new RegExp('#[ \t]*' + command), '#' + command)
+}
 
 // optional list of rule, seperated by comma
 function commaSep (rule) {
